@@ -319,13 +319,15 @@ class HarmonicAngleGenerator:
         angle_theta = paramset[self.name]["angle"]
         angle_k = paramset[self.name]["k"]
         angle_msks = paramset.mask[self.name]["angle"]
-        for nnode, key in enumerate(self.bond_keys):
+        for nnode, key in enumerate(self.angle_keys):
             self.ffinfo["Forces"][self.name]["node"][angle_node_indices[nnode]]["attrib"] = {
             }
             self.ffinfo["Forces"][self.name]["node"][angle_node_indices[nnode]
                                                      ]["attrib"][f"{self.key_type}1"] = key[0]
             self.ffinfo["Forces"][self.name]["node"][angle_node_indices[nnode]
                                                      ]["attrib"][f"{self.key_type}2"] = key[1]
+            self.ffinfo["Forces"][self.name]["node"][angle_node_indices[nnode]
+                                                     ]["attrib"][f"{self.key_type}3"] = key[2]
             theta0 = angle_theta[nnode]
             k = angle_k[nnode]
             mask = angle_msks[nnode]
