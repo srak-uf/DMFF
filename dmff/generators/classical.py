@@ -932,11 +932,11 @@ class NonbondedGenerator:
         # Build charge mapping: map each atom to its charge parameter index
         map_charge = []
         
-        # Use only the charges from XML residue templates (in XML order)
-        # Do not add any new charges from PDB atoms
+        # Start with charges from XML residue templates (in XML order)
+        # Additional charges from PDB atoms will be appended if needed
         if self.charge_in_residue and self.charge_keys:
-            actual_charge_keys = self.charge_keys
-            actual_charge_values = self.charge_values
+            actual_charge_keys = list(self.charge_keys)
+            actual_charge_values = list(self.charge_values)
         else:
             actual_charge_keys = []
             actual_charge_values = []
@@ -948,11 +948,16 @@ class NonbondedGenerator:
                 atom_name = atom.name
                 charge_key = (res_name, atom_name)
                 
-                # Find the charge index in XML templates
+                # Find the charge index - check if already in our list
                 if charge_key in actual_charge_keys:
                     cidx = actual_charge_keys.index(charge_key)
                 else:
-                    raise DMFFException(f"Charge for atom {atom_name} in residue {res_name} not found in XML templates.")
+                    # Atom not in XML templates - add it as new parameter
+                    # This maintains backward compatibility for atoms not defined in XML
+                    actual_charge = float(atom.meta["charge"]) if "charge" in atom.meta else 0.0
+                    actual_charge_keys.append(charge_key)
+                    actual_charge_values.append(actual_charge)
+                    cidx = len(actual_charge_keys) - 1
             else:
                 # Use atom type for non-residue charges
                 atype = atom.meta[self.key_type]
@@ -1222,11 +1227,11 @@ class CoulombGenerator:
         # Build charge mapping: map each atom to its charge parameter index
         map_charge = []
         
-        # Use only the charges from XML residue templates (in XML order)
-        # Do not add any new charges from PDB atoms
+        # Start with charges from XML residue templates (in XML order)
+        # Additional charges from PDB atoms will be appended if needed
         if self.charge_keys:
-            actual_charge_keys = self.charge_keys
-            actual_charge_values = self.charge_values
+            actual_charge_keys = list(self.charge_keys)
+            actual_charge_values = list(self.charge_values)
         else:
             actual_charge_keys = []
             actual_charge_values = []
@@ -1238,11 +1243,16 @@ class CoulombGenerator:
                 atom_name = atom.name
                 charge_key = (res_name, atom_name)
                 
-                # Find the charge index in XML templates
+                # Find the charge index - check if already in our list
                 if charge_key in actual_charge_keys:
                     cidx = actual_charge_keys.index(charge_key)
                 else:
-                    raise DMFFException(f"Charge for atom {atom_name} in residue {res_name} not found in XML templates.")
+                    # Atom not in XML templates - add it as new parameter
+                    # This maintains backward compatibility for atoms not defined in XML
+                    actual_charge = float(atom.meta["charge"]) if "charge" in atom.meta else 0.0
+                    actual_charge_keys.append(charge_key)
+                    actual_charge_values.append(actual_charge)
+                    cidx = len(actual_charge_keys) - 1
             else:
                 # No charges were stored - this shouldn't happen
                 raise DMFFException(f"No charges stored in CoulombGenerator")
