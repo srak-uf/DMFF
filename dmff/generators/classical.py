@@ -930,13 +930,13 @@ class NonbondedGenerator:
             charges_per_atom = jnp.array([self.type_to_charge[i] for i in types])
 
         # Build charge mapping: map each atom to its charge parameter index
-        # Each atom gets its own independent charge parameter
         map_charge = []
         
-        # Initialize with XML order to ensure charges follow XML residue template order
+        # Use only the charges from XML residue templates (in XML order)
+        # Do not add any new charges from PDB atoms
         if self.charge_in_residue and self.charge_keys:
-            actual_charge_keys = list(self.charge_keys)
-            actual_charge_values = list(self.charge_values)
+            actual_charge_keys = self.charge_keys
+            actual_charge_values = self.charge_values
         else:
             actual_charge_keys = []
             actual_charge_values = []
@@ -948,16 +948,11 @@ class NonbondedGenerator:
                 atom_name = atom.name
                 charge_key = (res_name, atom_name)
                 
-                # Check if this charge_key is already in our list (should be from XML)
+                # Find the charge index in XML templates
                 if charge_key in actual_charge_keys:
                     cidx = actual_charge_keys.index(charge_key)
                 else:
-                    # Atom not in original residue templates - add it as new parameter
-                    # Get actual charge value from OpenMM's template matching
-                    actual_charge = float(atom.meta["charge"]) if "charge" in atom.meta else 0.0
-                    actual_charge_keys.append(charge_key)
-                    actual_charge_values.append(actual_charge)
-                    cidx = len(actual_charge_keys) - 1
+                    raise DMFFException(f"Charge for atom {atom_name} in residue {res_name} not found in XML templates.")
             else:
                 # Use atom type for non-residue charges
                 atype = atom.meta[self.key_type]
@@ -1225,13 +1220,13 @@ class CoulombGenerator:
         charges_per_atom = jnp.array(charges_per_atom)
         
         # Build charge mapping: map each atom to its charge parameter index
-        # Each atom gets its own independent charge parameter
         map_charge = []
         
-        # Initialize with XML order to ensure charges follow XML residue template order
+        # Use only the charges from XML residue templates (in XML order)
+        # Do not add any new charges from PDB atoms
         if self.charge_keys:
-            actual_charge_keys = list(self.charge_keys)
-            actual_charge_values = list(self.charge_values)
+            actual_charge_keys = self.charge_keys
+            actual_charge_values = self.charge_values
         else:
             actual_charge_keys = []
             actual_charge_values = []
@@ -1243,16 +1238,11 @@ class CoulombGenerator:
                 atom_name = atom.name
                 charge_key = (res_name, atom_name)
                 
-                # Check if this charge_key is already in our list (should be from XML)
+                # Find the charge index in XML templates
                 if charge_key in actual_charge_keys:
                     cidx = actual_charge_keys.index(charge_key)
                 else:
-                    # Atom not in original residue templates - add it as new parameter
-                    # Get actual charge value from OpenMM's template matching
-                    actual_charge = float(atom.meta["charge"]) if "charge" in atom.meta else 0.0
-                    actual_charge_keys.append(charge_key)
-                    actual_charge_values.append(actual_charge)
-                    cidx = len(actual_charge_keys) - 1
+                    raise DMFFException(f"Charge for atom {atom_name} in residue {res_name} not found in XML templates.")
             else:
                 # No charges were stored - this shouldn't happen
                 raise DMFFException(f"No charges stored in CoulombGenerator")
