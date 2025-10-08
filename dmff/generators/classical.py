@@ -838,12 +838,13 @@ class NonbondedGenerator:
         # Store charges in paramset during initialization
         # If charges come from residues, extract them from residue templates
         # We need to handle cases where atoms with same LJ type have different charges
-        self.charge_keys = []  # List of (residue, atomname) or atom type identifiers
-        self.charge_values = []  # Corresponding charge values
+        self.charge_keys = []  # List of (residue, atomname) or atom type identifiers (in XML order)
+        self.charge_values = []  # Corresponding charge values (in XML order)
         
         if self.charge_in_residue:
             # Build charge mapping from residue templates
             # Use (residue_name, atom_name) as unique identifier for charges
+            # The order here matches the XML residue definition order
             for residue in self.ffinfo["Residues"]:
                 res_name = residue["name"]
                 for atom in residue["particles"]:
@@ -865,6 +866,7 @@ class NonbondedGenerator:
         
         # DO NOT add charges to paramset here - they will be added during createPotential
         # when we have the actual topology and can properly match atoms
+        # The charges in paramset will follow the XML residue template order
 
     def getName(self):
         return self.name
@@ -1145,10 +1147,11 @@ class CoulombGenerator:
         # Store charges in paramset during initialization
         # Extract charges from residue templates
         # Handle cases where atoms with same LJ type have different charges
-        self.charge_keys = []  # List of (residue, atomname) identifiers
-        self.charge_values = []  # Corresponding charge values
+        self.charge_keys = []  # List of (residue, atomname) identifiers (in XML order)
+        self.charge_values = []  # Corresponding charge values (in XML order)
         type_to_charge = {}  # For backward compatibility
         
+        # The order here matches the XML residue definition order
         for residue in self.ffinfo["Residues"]:
             res_name = residue["name"]
             for atom in residue["particles"]:
@@ -1170,6 +1173,7 @@ class CoulombGenerator:
         
         # DO NOT add charges to paramset here - they will be added during createPotential
         # when we have the actual topology and can properly match atoms
+        # The charges in paramset will follow the XML residue template order
         self._atom_types = []  # Not used anymore
         self._type_to_charge = type_to_charge  # Store for fallback
         self._type_to_charge = {}
