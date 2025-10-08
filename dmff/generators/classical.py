@@ -930,8 +930,14 @@ class NonbondedGenerator:
         # Build charge mapping: map each atom to its charge parameter index
         # Each atom gets its own independent charge parameter
         map_charge = []
-        actual_charge_keys = []
-        actual_charge_values = []
+        
+        # Initialize with XML order to ensure charges follow XML residue template order
+        if self.charge_in_residue and self.charge_keys:
+            actual_charge_keys = list(self.charge_keys)
+            actual_charge_values = list(self.charge_values)
+        else:
+            actual_charge_keys = []
+            actual_charge_values = []
         
         for atom in topdata.atoms():
             if self.charge_in_residue and self.charge_keys:
@@ -940,16 +946,9 @@ class NonbondedGenerator:
                 atom_name = atom.name
                 charge_key = (res_name, atom_name)
                 
-                # Check if this charge_key is already in our actual list
+                # Check if this charge_key is already in our list (should be from XML)
                 if charge_key in actual_charge_keys:
                     cidx = actual_charge_keys.index(charge_key)
-                elif charge_key in self.charge_keys:
-                    # Found in template - use template charge value
-                    template_idx = self.charge_keys.index(charge_key)
-                    charge_val = self.charge_values[template_idx]
-                    actual_charge_keys.append(charge_key)
-                    actual_charge_values.append(charge_val)
-                    cidx = len(actual_charge_keys) - 1
                 else:
                     # Atom not in original residue templates - add it as new parameter
                     # Get actual charge value from OpenMM's template matching
@@ -1222,11 +1221,16 @@ class CoulombGenerator:
         charges_per_atom = jnp.array(charges_per_atom)
         
         # Build charge mapping: map each atom to its charge parameter index
-        # Build charge mapping: map each atom to its charge parameter index
         # Each atom gets its own independent charge parameter
         map_charge = []
-        actual_charge_keys = []
-        actual_charge_values = []
+        
+        # Initialize with XML order to ensure charges follow XML residue template order
+        if self.charge_keys:
+            actual_charge_keys = list(self.charge_keys)
+            actual_charge_values = list(self.charge_values)
+        else:
+            actual_charge_keys = []
+            actual_charge_values = []
         
         for atom in topdata.atoms():
             if self.charge_keys:
@@ -1235,16 +1239,9 @@ class CoulombGenerator:
                 atom_name = atom.name
                 charge_key = (res_name, atom_name)
                 
-                # Check if this charge_key is already in our actual list
+                # Check if this charge_key is already in our list (should be from XML)
                 if charge_key in actual_charge_keys:
                     cidx = actual_charge_keys.index(charge_key)
-                elif charge_key in self.charge_keys:
-                    # Found in template - use template charge value
-                    template_idx = self.charge_keys.index(charge_key)
-                    charge_val = self.charge_values[template_idx]
-                    actual_charge_keys.append(charge_key)
-                    actual_charge_values.append(charge_val)
-                    cidx = len(actual_charge_keys) - 1
                 else:
                     # Atom not in original residue templates - add it as new parameter
                     # Get actual charge value from OpenMM's template matching
