@@ -4,36 +4,39 @@
 Previously, the order of charges in `paramset.parameters["NonbondedForce"]["charge"]` and `paramset.parameters["CoulombForce"]["charge"]` followed the order atoms appeared in the PDB file. This was not robust because the PDB file order can vary.
 
 ## Solution
-The charges in paramset now follow the order defined in the XML residue templates first, making the paramset more predictable and consistent across different PDB files with the same force field.
+The charges in paramset now contain ONLY the charges defined in the XML residue templates, in XML order. This makes the paramset fully controlled by the force field definition.
 
 **Charge ordering behavior**:
-1. Charges from XML residue templates appear first, in XML order
-2. If a PDB atom's charge is not defined in the XML templates, it is appended to the charge array (for backward compatibility)
-3. Duplicate charges are avoided - each unique (residue, atom) pair appears only once
+1. Charges are taken directly from XML residue templates in XML order
+2. No additional charges are added from PDB processing  
+3. All atoms in the PDB must be defined in the XML templates (otherwise an error is raised with instructions)
+4. No duplicates - the charge array contains exactly what's in the XML templates
 
 ## Changes Made
 
 ### NonbondedGenerator
 - Modified `NonbondedGenerator.__init__()` to document that `charge_keys` and `charge_values` are stored in XML order
-- Modified `NonbondedGenerator.createPotential()` to pre-populate charges from XML, then append new charges from PDB if needed
+- Modified `NonbondedGenerator.createPotential()` to use ONLY XML charges with no PDB additions
 
 ### CoulombGenerator  
 - Modified `CoulombGenerator.__init__()` to document that `charge_keys` and `charge_values` are stored in XML order
-- Modified `CoulombGenerator.createPotential()` to pre-populate charges from XML, then append new charges from PDB if needed
+- Modified `CoulombGenerator.createPotential()` to use ONLY XML charges with no PDB additions
 
 ## Key Implementation Detail
-The charge arrays are built in two phases:
-1. **Initialization**: `actual_charge_keys` and `actual_charge_values` are initialized with charges from XML templates (in XML order)
-2. **PDB processing**: When processing atoms, if an atom's (residue, atom) key is not in the list, it's appended as a new charge parameter
+The charge arrays (`actual_charge_keys` and `actual_charge_values`) directly reference the XML template arrays (`self.charge_keys` and `self.charge_values`). When processing atoms:
+1. Each atom looks up its charge index from the XML template charges
+2. If an atom is not found in the XML, a descriptive error is raised with instructions to update the XML file
+3. Multiple atoms can reference the same charge parameter via the `map_charge` index array
+4. The charge array in paramset contains exactly the charges from XML, in XML order, with no duplicates
 
 This ensures:
-- XML-defined charges always appear first in XML order
-- PDB atoms not in XML templates are supported (backward compatibility)
-- No duplicate charges - each unique (residue, atom) combination appears only once
-- The `map_charge` array correctly maps each atom to its charge parameter
+- The charge array is fully determined by the XML force field definition
+- Charges are in XML order
+- No duplicates or PDB-dependent additions
+- Clear error messages when XML is incomplete
 
 ## Testing
 A test was added in `tests/test_frontend/test_charge_order.py` to verify that charges follow the XML residue template order.
 
-## Backward Compatibility
-This change is backward compatible. Systems where all atoms are defined in the XML will have charges in pure XML order. Systems with atoms not in the XML will have those charges appended after the XML charges. The mapping from atoms to charges is correct via the `map_charge` array.
+## Backward Compatibility Note
+This change requires that all atoms in PDB files must be defined in the XML force field templates. If you get an error about atoms not found in XML templates, you need to add those atoms to your XML residue definitions.
