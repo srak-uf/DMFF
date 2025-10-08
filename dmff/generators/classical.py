@@ -966,7 +966,6 @@ class NonbondedGenerator:
                     raise DMFFException(f"Atom type {atype} not found in atom_keys.")
             
             map_charge.append(cidx)
-            map_charge.append(cidx)
         
         map_charge = jnp.array(map_charge)
         
