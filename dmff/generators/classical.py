@@ -152,7 +152,7 @@ class HarmonicBondGenerator:
         return None
 
     def createPotential(self, topdata: DMFFTopology, nonbondedMethod,
-                        nonbondedCutoff, **kwargs):
+                        nonbondedCutoff, paramset: ParamSet = None, **kwargs):
         """
         Creates the potential.
 
@@ -361,7 +361,7 @@ class HarmonicAngleGenerator:
         return None
 
     def createPotential(self, topdata: DMFFTopology, nonbondedMethod,
-                        nonbondedCutoff, **kwargs):
+                        nonbondedCutoff, paramset: ParamSet = None, **kwargs):
         """
         Creates the potential.
 
@@ -668,7 +668,7 @@ class PeriodicTorsionGenerator:
 
 
     def createPotential(self, topdata: DMFFTopology, nonbondedMethod,
-                        nonbondedCutoff, **kwargs):
+                        nonbondedCutoff, paramset: ParamSet = None, **kwargs):
         
         if self.key_type is None:
             def potential_fn_zero(positions: jnp.ndarray, box: jnp.ndarray, pairs: jnp.ndarray, params: ParamSet) -> jnp.ndarray:
@@ -800,13 +800,13 @@ class NonbondedGenerator:
             self.ffinfo["Forces"]["NonbondedForce"]["meta"].get("lj14scale", 0.5))
         self.key_type = None
         self.type_to_charge = {}
-        
+
         self.charge_in_residue = False
         for node in self.ffinfo["Forces"]["NonbondedForce"]["node"]:
             if not self.charge_in_residue and node["name"] == "UseAttributeFromResidue":
                 if node["attrib"]["name"] == "charge":
                     self.charge_in_residue = True
-        
+
         types, sigma, epsilon, atom_mask = [], [], [], []
         for node in self.ffinfo["Forces"]["NonbondedForce"]["node"]:
             if node["name"] == "Atom":
@@ -835,6 +835,39 @@ class NonbondedGenerator:
         paramset.addParameter(sigma, "sigma", field=self.name, mask=atom_mask)
         paramset.addParameter(epsilon, "epsilon", field=self.name, mask=atom_mask)
 
+        # Store charges in paramset during initialization
+        # If charges come from residues, extract them from residue templates
+        # We need to handle cases where atoms with same LJ type have different charges
+        self.charge_keys = []  # List of (residue, atomname) or atom type identifiers (in XML order)
+        self.charge_values = []  # Corresponding charge values (in XML order)
+        
+        if self.charge_in_residue:
+            # Build charge mapping from residue templates
+            # Use (residue_name, atom_name) as unique identifier for charges
+            # The order here matches the XML residue definition order
+            for residue in self.ffinfo["Residues"]:
+                res_name = residue["name"]
+                for atom in residue["particles"]:
+                    if "charge" in atom:
+                        # Use atom name within residue as identifier
+                        atom_name = atom.get("name", "")
+                        charge_key = (res_name, atom_name)
+                        charge_val = float(atom["charge"])
+                        
+                        # Also map by atom type for backward compatibility
+                        if self.key_type in atom:
+                            atom_type = atom[self.key_type]
+                            self.type_to_charge[atom_type] = charge_val
+                        
+                        # Store unique charge parameters
+                        if charge_key not in self.charge_keys:
+                            self.charge_keys.append(charge_key)
+                            self.charge_values.append(charge_val)
+        
+        # DO NOT add charges to paramset here - they will be added during createPotential
+        # when we have the actual topology and can properly match atoms
+        # The charges in paramset will follow the XML residue template order
+
     def getName(self):
         return self.name
 
@@ -862,7 +895,7 @@ class NonbondedGenerator:
         return None
     
     def createPotential(self, topdata: DMFFTopology, nonbondedMethod,
-                        nonbondedCutoff, **kwargs):
+                        nonbondedCutoff, paramset: ParamSet = None, **kwargs):
         methodMap = {
             app.NoCutoff: "NoCutoff",
             app.CutoffPeriodic: "CutoffPeriodic",
@@ -890,11 +923,63 @@ class NonbondedGenerator:
             ifPBC = False
 
         if self.charge_in_residue:
-            charges = [a.meta["charge"] for a in topdata.atoms()]
-            charges = jnp.array(charges)
+            charges_per_atom = [a.meta["charge"] for a in topdata.atoms()]
+            charges_per_atom = jnp.array(charges_per_atom)
         else:
             types = [a.meta[self.key_type] for a in topdata.atoms()]
-            charges = jnp.array([self.type_to_charge[i] for i in types])
+            charges_per_atom = jnp.array([self.type_to_charge[i] for i in types])
+
+        # Build charge mapping: map each atom to its charge parameter index
+        map_charge = []
+        
+        # Use charges from XML residue templates ONLY (in XML order)
+        # All atoms must be defined in XML templates
+        if self.charge_in_residue and self.charge_keys:
+            actual_charge_keys = self.charge_keys
+            actual_charge_values = self.charge_values
+        else:
+            actual_charge_keys = []
+            actual_charge_values = []
+        
+        for atom in topdata.atoms():
+            if self.charge_in_residue and self.charge_keys:
+                # Try (residue_name, atom_name) matching
+                res_name = atom.residue.name
+                atom_name = atom.name
+                charge_key = (res_name, atom_name)
+                
+                # Find the charge index in XML templates
+                if charge_key in actual_charge_keys:
+                    cidx = actual_charge_keys.index(charge_key)
+                else:
+                    raise DMFFException(
+                        f"Charge for atom '{atom_name}' in residue '{res_name}' not found in XML templates. "
+                        f"Please add <Atom name=\"{atom_name}\" ... charge=\"...\"/> to the <Residue name=\"{res_name}\"> "
+                        f"definition in your XML force field file."
+                    )
+            else:
+                # Use atom type for non-residue charges
+                atype = atom.meta[self.key_type]
+                try:
+                    cidx = self.atom_keys.index(atype)
+                except ValueError:
+                    raise DMFFException(f"Atom type {atype} not found in atom_keys.")
+            
+            map_charge.append(cidx)
+        
+        map_charge = jnp.array(map_charge)
+        
+        # Add or update charges in paramset
+        if paramset is not None and self.charge_in_residue and actual_charge_values:
+            charges = jnp.array(actual_charge_values)
+            charge_mask = jnp.ones(charges.shape)
+            if self.name not in paramset.parameters:
+                paramset.addField(self.name)
+            paramset.parameters[self.name]["charge"] = charges
+            paramset.mask[self.name]["charge"] = charge_mask
+        
+        # Store the charge mapping for use in the potential function
+        self.map_charge = map_charge
 
         if unit.is_quantity(nonbondedCutoff):
             r_cut = nonbondedCutoff.value_in_unit(unit.nanometer)
@@ -915,12 +1000,12 @@ class NonbondedGenerator:
             # do not use PME
             if nonbondedMethod in [app.CutoffPeriodic, app.CutoffNonPeriodic]:
                 # use Reaction Field
-                coulforce = CoulReactionFieldForce(r_cut, charges, isPBC=ifPBC)
+                coulforce = CoulReactionFieldForce(r_cut, charges_per_atom, isPBC=ifPBC)
             if nonbondedMethod is app.NoCutoff:
                 # use NoCutoff
-                coulforce = CoulNoCutoffForce(init_charges=charges)
+                coulforce = CoulNoCutoffForce(init_charges=charges_per_atom)
         else:
-            coulforce = CoulombPMEForce(r_cut, charges, kappa, (K1, K2, K3))
+            coulforce = CoulombPMEForce(r_cut, charges_per_atom, kappa, (K1, K2, K3))
         
         self.pme_force = coulforce
         coulenergy = coulforce.generate_get_energy()
@@ -1001,7 +1086,10 @@ class NonbondedGenerator:
             # it is jit-compatiable
             isinstance_jnp(positions, box, params)
 
-            coulE = coulenergy(positions, box, pairs, mscales_coul)
+            # Expand per-type charges to per-atom using the mapping
+            charges_per_type = params[self.name]["charge"]
+            charges_per_atom = charges_per_type[self.map_charge]
+            coulE = coulenergy(positions, box, pairs, charges_per_atom, mscales_coul)
             
             ljE = ljenergy(positions, box, pairs, params[self.name]["epsilon"],
                             params[self.name]["sigma"], eps_nbfix, sig_nbfix, mscales_lj)
@@ -1054,6 +1142,40 @@ class CoulombGenerator:
         bcc_mask = jnp.array(bcc_mask)
         paramset.addParameter(bcc_prms, "bcc", field=self.name, mask=bcc_mask)
         self._bcc_shape = paramset[self.name]["bcc"].shape[0]
+        
+        # Store charges in paramset during initialization
+        # Extract charges from residue templates
+        # Handle cases where atoms with same LJ type have different charges
+        self.charge_keys = []  # List of (residue, atomname) identifiers (in XML order)
+        self.charge_values = []  # Corresponding charge values (in XML order)
+        type_to_charge = {}  # For backward compatibility
+        
+        # The order here matches the XML residue definition order
+        for residue in self.ffinfo["Residues"]:
+            res_name = residue["name"]
+            for atom in residue["particles"]:
+                if "charge" in atom:
+                    # Use atom name within residue as identifier
+                    atom_name = atom.get("name", "")
+                    charge_key = (res_name, atom_name)
+                    charge_val = float(atom["charge"])
+                    
+                    # Also map by atom type for backward compatibility
+                    if "type" in atom:
+                        atom_type = atom["type"]
+                        type_to_charge[atom_type] = charge_val
+                    
+                    # Store unique charge parameters
+                    if charge_key not in self.charge_keys:
+                        self.charge_keys.append(charge_key)
+                        self.charge_values.append(charge_val)
+        
+        # DO NOT add charges to paramset here - they will be added during createPotential
+        # when we have the actual topology and can properly match atoms
+        # The charges in paramset will follow the XML residue template order
+        self._atom_types = []  # Not used anymore
+        self._type_to_charge = type_to_charge  # Store for fallback
+        self._type_to_charge = {}
 
     def getName(self):
         return self.name
@@ -1073,7 +1195,7 @@ class CoulombGenerator:
                     nbcc += 1
 
     def createPotential(self, topdata: DMFFTopology, nonbondedMethod,
-                        nonbondedCutoff, **kwargs):
+                        nonbondedCutoff, paramset: ParamSet = None, **kwargs):
         methodMap = {
             app.NoCutoff: "NoCutoff",
             app.CutoffPeriodic: "CutoffPeriodic",
@@ -1098,8 +1220,55 @@ class CoulombGenerator:
         else:
             ifPBC = False
 
-        charges = [a.meta["charge"] for a in topdata.atoms()]
-        charges = jnp.array(charges)
+        charges_per_atom = [a.meta["charge"] for a in topdata.atoms()]
+        charges_per_atom = jnp.array(charges_per_atom)
+        
+        # Build charge mapping: map each atom to its charge parameter index
+        map_charge = []
+        
+        # Use charges from XML residue templates ONLY (in XML order)
+        # All atoms must be defined in XML templates
+        if self.charge_keys:
+            actual_charge_keys = self.charge_keys
+            actual_charge_values = self.charge_values
+        else:
+            actual_charge_keys = []
+            actual_charge_values = []
+        
+        for atom in topdata.atoms():
+            if self.charge_keys:
+                # Try (residue_name, atom_name) matching
+                res_name = atom.residue.name
+                atom_name = atom.name
+                charge_key = (res_name, atom_name)
+                
+                # Find the charge index in XML templates
+                if charge_key in actual_charge_keys:
+                    cidx = actual_charge_keys.index(charge_key)
+                else:
+                    raise DMFFException(
+                        f"Charge for atom '{atom_name}' in residue '{res_name}' not found in XML templates. "
+                        f"Please add <Atom name=\"{atom_name}\" ... charge=\"...\"/> to the <Residue name=\"{res_name}\"> "
+                        f"definition in your XML force field file."
+                    )
+            else:
+                # No charges were stored - this shouldn't happen
+                raise DMFFException(f"No charges stored in CoulombGenerator")
+            
+            map_charge.append(cidx)
+        map_charge = jnp.array(map_charge)
+        
+        # Add or update charges in paramset
+        if paramset is not None and actual_charge_values:
+            charges = jnp.array(actual_charge_values)
+            charge_mask = jnp.ones(charges.shape)
+            if self.name not in paramset.parameters:
+                paramset.addField(self.name)
+            paramset.parameters[self.name]["charge"] = charges
+            paramset.mask[self.name]["charge"] = charge_mask
+        
+        # Store the charge mapping for use in the potential function
+        self.map_charge = map_charge
 
         cov_mat = topdata.buildCovMat()
 
@@ -1144,17 +1313,17 @@ class CoulombGenerator:
                 # use Reaction Field
                 coulforce = CoulReactionFieldForce(
                     r_cut,
-                    charges,
+                    charges_per_atom,
                     isPBC=ifPBC,
                     topology_matrix=top_mat if self._use_bcc else None)
             if nonbondedMethod is app.NoCutoff:
                 # use NoCutoff
                 coulforce = CoulNoCutoffForce(
-                    charges, topology_matrix=top_mat if self._use_bcc else None)
+                    charges_per_atom, topology_matrix=top_mat if self._use_bcc else None)
         else:
             coulforce = CoulombPMEForce(
                 r_cut,
-                charges, 
+                charges_per_atom, 
                 kappa, (K1, K2, K3),
                 topology_matrix=top_mat if self._use_bcc else None)
 
@@ -1171,12 +1340,16 @@ class CoulombGenerator:
             # it is jit-compatiable
             isinstance_jnp(positions, box, params)
 
+            # Expand per-type charges to per-atom using the mapping
+            charges_per_type = params["CoulombForce"]["charge"]
+            charges_per_atom = charges_per_type[self.map_charge]
+            
             if self._use_bcc:
                 coulE = coulenergy(positions, box, pairs,
-                                   params["CoulombForce"]["bcc"], mscales_coul)
+                                   charges_per_atom, params["CoulombForce"]["bcc"], mscales_coul)
             else:
                 coulE = coulenergy(positions, box, pairs,
-                                   mscales_coul)
+                                   charges_per_atom, mscales_coul)
 
             if has_aux:
                 return coulE, aux
@@ -1313,7 +1486,7 @@ class LennardJonesGenerator:
                 self.ffinfo["Forces"][self.name]["node"][nnode]["attrib"]["epsilon"] = eps_now
 
     def createPotential(self, topdata: DMFFTopology, nonbondedMethod,
-                        nonbondedCutoff, **kwargs):
+                        nonbondedCutoff, paramset: ParamSet = None, **kwargs):
         methodMap = {
             app.NoCutoff: "NoCutoff",
             app.CutoffPeriodic: "CutoffPeriodic",
