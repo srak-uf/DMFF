@@ -931,32 +931,21 @@ class NonbondedGenerator:
 
         # Build charge mapping: map each atom to its charge parameter index
         map_charge = []
-        
-        # Use charges from XML residue templates ONLY (in XML order)
-        # All atoms must be defined in XML templates
-        if self.charge_in_residue and self.charge_keys:
-            actual_charge_keys = self.charge_keys
-            actual_charge_values = self.charge_values
-        else:
-            actual_charge_keys = []
-            actual_charge_values = []
-        
+        actual_charge_keys = []
+        actual_charge_values = []
+        actual_cidx = []
+
         for atom in topdata.atoms():
             if self.charge_in_residue and self.charge_keys:
                 # Try (residue_name, atom_name) matching
                 res_name = atom.residue.name
                 atom_name = atom.name
                 charge_key = (res_name, atom_name)
-                
-                # Find the charge index in XML templates
-                if charge_key in actual_charge_keys:
-                    cidx = actual_charge_keys.index(charge_key)
-                else:
-                    raise DMFFException(
-                        f"Charge for atom '{atom_name}' in residue '{res_name}' not found in XML templates. "
-                        f"Please add <Atom name=\"{atom_name}\" ... charge=\"...\"/> to the <Residue name=\"{res_name}\"> "
-                        f"definition in your XML force field file."
-                    )
+                actual_charge = float(atom.meta["charge"])
+                actual_charge_keys.append(charge_key)
+                actual_charge_values.append(actual_charge)
+                actual_cidx.append(atom.meta["xmlidx"])
+                cidx = atom.meta["xmlidx"]
             else:
                 # Use atom type for non-residue charges
                 atype = atom.meta[self.key_type]
@@ -964,20 +953,27 @@ class NonbondedGenerator:
                     cidx = self.atom_keys.index(atype)
                 except ValueError:
                     raise DMFFException(f"Atom type {atype} not found in atom_keys.")
-            
+
             map_charge.append(cidx)
-        
+
+        self.actual_charge_keys = actual_charge_keys
+        self.actual_charge_values = actual_charge_values
         map_charge = jnp.array(map_charge)
-        
+
         # Add or update charges in paramset
         if paramset is not None and self.charge_in_residue and actual_charge_values:
-            charges = jnp.array(actual_charge_values)
+            charges = []
+            for i in range(map_charge.max()+1):
+                idx = np.where(map_charge == i)[0][0]
+                print(idx)
+                charges.append(actual_charge_values[idx])
+            charges = jnp.array(charges)
             charge_mask = jnp.ones(charges.shape)
             if self.name not in paramset.parameters:
                 paramset.addField(self.name)
             paramset.parameters[self.name]["charge"] = charges
             paramset.mask[self.name]["charge"] = charge_mask
-        
+
         # Store the charge mapping for use in the potential function
         self.map_charge = map_charge
 
@@ -1006,7 +1002,7 @@ class NonbondedGenerator:
                 coulforce = CoulNoCutoffForce(init_charges=charges_per_atom)
         else:
             coulforce = CoulombPMEForce(r_cut, charges_per_atom, kappa, (K1, K2, K3))
-        
+
         self.pme_force = coulforce
         coulenergy = coulforce.generate_get_energy()
 
