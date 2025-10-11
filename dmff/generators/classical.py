@@ -838,13 +838,12 @@ class NonbondedGenerator:
         # Store charges in paramset during initialization
         # If charges come from residues, extract them from residue templates
         # We need to handle cases where atoms with same LJ type have different charges
-        self.charge_keys = []  # List of (residue, atomname) or atom type identifiers (in XML order)
-        self.charge_values = []  # Corresponding charge values (in XML order)
+        self.charge_keys = []  # List of (residue, atomname) or atom type identifiers
+        self.charge_values = []  # Corresponding charge values
         
         if self.charge_in_residue:
             # Build charge mapping from residue templates
             # Use (residue_name, atom_name) as unique identifier for charges
-            # The order here matches the XML residue definition order
             for residue in self.ffinfo["Residues"]:
                 res_name = residue["name"]
                 for atom in residue["particles"]:
@@ -866,7 +865,6 @@ class NonbondedGenerator:
         
         # DO NOT add charges to paramset here - they will be added during createPotential
         # when we have the actual topology and can properly match atoms
-        # The charges in paramset will follow the XML residue template order
 
     def getName(self):
         return self.name
@@ -930,6 +928,7 @@ class NonbondedGenerator:
             charges_per_atom = jnp.array([self.type_to_charge[i] for i in types])
 
         # Build charge mapping: map each atom to its charge parameter index
+        # Each atom gets its own independent charge parameter
         map_charge = []
         actual_charge_keys = []
         actual_charge_values = []
@@ -1141,11 +1140,10 @@ class CoulombGenerator:
         # Store charges in paramset during initialization
         # Extract charges from residue templates
         # Handle cases where atoms with same LJ type have different charges
-        self.charge_keys = []  # List of (residue, atomname) identifiers (in XML order)
-        self.charge_values = []  # Corresponding charge values (in XML order)
+        self.charge_keys = []  # List of (residue, atomname) identifiers
+        self.charge_values = []  # Corresponding charge values
         type_to_charge = {}  # For backward compatibility
         
-        # The order here matches the XML residue definition order
         for residue in self.ffinfo["Residues"]:
             res_name = residue["name"]
             for atom in residue["particles"]:
@@ -1167,7 +1165,6 @@ class CoulombGenerator:
         
         # DO NOT add charges to paramset here - they will be added during createPotential
         # when we have the actual topology and can properly match atoms
-        # The charges in paramset will follow the XML residue template order
         self._atom_types = []  # Not used anymore
         self._type_to_charge = type_to_charge  # Store for fallback
         self._type_to_charge = {}
@@ -1219,16 +1216,11 @@ class CoulombGenerator:
         charges_per_atom = jnp.array(charges_per_atom)
         
         # Build charge mapping: map each atom to its charge parameter index
+        # Build charge mapping: map each atom to its charge parameter index
+        # Each atom gets its own independent charge parameter
         map_charge = []
-        
-        # Use charges from XML residue templates ONLY (in XML order)
-        # All atoms must be defined in XML templates
-        if self.charge_keys:
-            actual_charge_keys = self.charge_keys
-            actual_charge_values = self.charge_values
-        else:
-            actual_charge_keys = []
-            actual_charge_values = []
+        actual_charge_keys = []
+        actual_charge_values = []
         
         for atom in topdata.atoms():
             if self.charge_keys:
@@ -1237,15 +1229,23 @@ class CoulombGenerator:
                 atom_name = atom.name
                 charge_key = (res_name, atom_name)
                 
-                # Find the charge index in XML templates
+                # Check if this charge_key is already in our actual list
                 if charge_key in actual_charge_keys:
                     cidx = actual_charge_keys.index(charge_key)
+                elif charge_key in self.charge_keys:
+                    # Found in template - use template charge value
+                    template_idx = self.charge_keys.index(charge_key)
+                    charge_val = self.charge_values[template_idx]
+                    actual_charge_keys.append(charge_key)
+                    actual_charge_values.append(charge_val)
+                    cidx = len(actual_charge_keys) - 1
                 else:
-                    raise DMFFException(
-                        f"Charge for atom '{atom_name}' in residue '{res_name}' not found in XML templates. "
-                        f"Please add <Atom name=\"{atom_name}\" ... charge=\"...\"/> to the <Residue name=\"{res_name}\"> "
-                        f"definition in your XML force field file."
-                    )
+                    # Atom not in original residue templates - add it as new parameter
+                    # Get actual charge value from OpenMM's template matching
+                    actual_charge = float(atom.meta["charge"]) if "charge" in atom.meta else 0.0
+                    actual_charge_keys.append(charge_key)
+                    actual_charge_values.append(actual_charge)
+                    cidx = len(actual_charge_keys) - 1
             else:
                 # No charges were stored - this shouldn't happen
                 raise DMFFException(f"No charges stored in CoulombGenerator")
