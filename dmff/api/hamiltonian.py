@@ -132,7 +132,7 @@ class Hamiltonian:
                     from rdkit import Chem
                     vsites_to_add = []
                     topatoms = [a for a in topdata.atoms()]
-                    
+
                     for node in self.ffinfo["Forces"]["NonbondedForce"]["node"]:
                         if node["name"] == "VirtualSite":
                             info = node["attrib"]
@@ -149,15 +149,15 @@ class Hamiltonian:
                                             idx = int(atoms[molidx].GetProp("_Index"))
                                             atom = topatoms[idx]
                                             alist.append(atom)
-                                        
+
                                         # Extract vtype and weights/distance
                                         vtype_num = int(info.get("vtype", "1"))
                                         distance = float(info.get("distance", "0.0"))
-                                        
+
                                         # Convert vtype number to string format
                                         vtype_map = {1: "2fd", 2: "3fd", 3: "average2", 4: "average3"}
                                         vtype = vtype_map.get(vtype_num, "2fd")
-                                        
+
                                         # For distance-based vsites (2fd, 3fd), weights list contains distance
                                         if vtype in ["2fd", "3fd"]:
                                             wlist = [distance]
@@ -171,15 +171,15 @@ class Hamiltonian:
                                                     break
                                                 wlist.append(float(info[key]))
                                                 widx += 1
-                                        
+
                                         meta = {}
                                         meta["type"] = info.get("type", "VS")
                                         meta["class"] = info.get("class", "VS")
                                         meta["charge"] = 0.0
-                                        
+
                                         vsite = VirtualSite(vtype, alist, wlist, meta=meta)
                                         vsites_to_add.append(vsite)
-                    
+
                     if vsites_to_add:
                         topdata = insertVirtualSites(topdata, vsites_to_add)
                 except ImportError:

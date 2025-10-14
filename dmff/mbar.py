@@ -22,6 +22,9 @@ import openmm as mm
 import openmm.app as app
 import openmm.unit as unit
 from .common.nblist import NeighborListFreud
+import psutil
+import os
+import time
 
 
 def buildTrajEnergyFunction(
@@ -41,7 +44,7 @@ def buildTrajEnergyFunction(
                 pair_full.append([na, nb, 0])
         pair_full = np.array(pair_full, dtype=int)
         pair_full[:, 2] = cov_map[pair_full[:, 0], pair_full[:, 1]]
-        for frame in tqdm(traj):
+        for frame in tqdm(traj, desc="Pair list"):
             aa, bb, cc = frame.openmm_boxes(0).value_in_unit(unit.nanometer)
             box = jnp.array(
                 [[aa[0], aa[1], aa[2]], [bb[0], bb[1], bb[2]], [cc[0], cc[1], cc[2]]]
@@ -68,15 +71,27 @@ def buildTrajEnergyFunction(
             ensemble_cns = 0.0
         elif ensemble.upper() == "NPT":
             ensemble_cns = 1.0
-        # eners = [
-        #     potential_func(pos_list[i], box_list[i], pairs_jax[i], parameters)
-        #     + ensemble_cns * pressure * 0.06023 * vol_list[i]
-        #     for i in trange(traj.n_frames)
-        # ]
+
+        time_begin = time.time()
+        process = psutil.Process(os.getpid())
+        print(
+            f"Init Energy calc: Memory Usage: {process.memory_info().rss / 1024**2:.2f} MB"
+        )
         eners = jax.vmap(
             lambda pos, box, pairs, vol: potential_func(pos, box, pairs, parameters)
             + ensemble_cns * pressure * 0.06023 * vol
         )(pos_list, box_list, pairs_jax, vol_list)
+        time_ener = time.time() - time_begin
+        process = psutil.Process(os.getpid())
+        print(
+            f"Energy calc: {time_ener:.2f} sec. Memory Usage: {process.memory_info().rss / 1024**2:.2f} MB"
+        )
+
+        # eners__ = jax.vmap(
+        #     lambda pos, box, pairs, vol: potential_func(pos, box, pairs, parameters)
+        # )(pos_list, box_list, pairs_jax, vol_list)
+
+        # print(eners__[0:3])
 
         if return_input:
             return eners, pos_list, box_list, pairs_jax, vol_list
@@ -96,16 +111,28 @@ def buildInputEnergyFunction(
             ensemble_cns = 0.0
         elif ensemble.upper() == "NPT":
             ensemble_cns = 1.0
-        
+
+        time_begin = time.time()
+        process = psutil.Process(os.getpid())
+        print(
+            f"Init Energy calc: Memory Usage: {process.memory_info().rss / 1024**2:.2f} MB"
+        )
         eners = jax.vmap(
             lambda pos, box, pairs, vol: potential_func(pos, box, pairs, parameters)
             + ensemble_cns * pressure * 0.06023 * vol
         )(pos_list, box_list, pairs_list, vol_list)
-        # eners = [
-        #     potential_func(pos_list[i], box_list[i], pairs_list[i], parameters)
-        #     + ensemble_cns * pressure * 0.06023 * vol_list[i]
-        #     for i in trange(len(pos_list))
-        # ]
+
+        # eners__ = jax.vmap(
+        #     lambda pos, box, pairs, vol: potential_func(pos, box, pairs, parameters)
+        # )(pos_list, box_list, pairs_list, vol_list)
+
+        # print(eners__[0:3])
+
+        time_ener = time.time() - time_begin
+        process = psutil.Process(os.getpid())
+        print(
+            f"Energy calc: {time_ener:.2f} sec. Memory Usage: {process.memory_info().rss / 1024**2:.2f} MB"
+        )
         return eners
 
     return energy_function
@@ -121,10 +148,16 @@ class TargetState:
         if return_input:
             eners, *input = self._efunc(trajectory, parameters, return_input=True)
         else:
-            eners = self._efunc(trajectory, parameters, return_input=False)
+            eners = self._efunc(trajectory, parameters)
         ulist = jnp.concatenate([beta * e.reshape((1,)) for e in eners])
         if return_input:
             return ulist, input
+        return ulist
+
+    def calc_energy_input(self, *input, parameters):
+        beta = 1.0 / self._temperature / 8.314 * 1000.0
+        eners = self._efunc(*input, parameters)
+        ulist = jnp.concatenate([beta * e.reshape((1,)) for e in eners])
         return ulist
 
 
@@ -310,6 +343,7 @@ class MBAREstimator:
         self._umat = umat
         self._nk = nk
         self._full_samples = samples
+        self._input = None
 
         self._mbar = MBAR(self._umat, self._nk, initialize=initialize)
         self._umat_jax = jax.numpy.array(self._umat)
@@ -321,9 +355,10 @@ class MBAREstimator:
         return_input=False, direct=False
     ):
         if isinstance(state, TargetState) and direct:
-            unew = state.calc_energy(*self._input, parameters)
+            unew = state.calc_energy_input(*self._input, parameters=parameters)
         elif isinstance(state, TargetState) and return_input:
             unew, *self._input = state.calc_energy(self._full_samples, parameters, return_input=True)
+            self._input = self._input[0]
         elif isinstance(state, TargetState):
             unew = state.calc_energy(self._full_samples, parameters)
         else:
