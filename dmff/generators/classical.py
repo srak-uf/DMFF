@@ -983,7 +983,8 @@ class NonbondedGenerator:
         # PME Settings
         if nonbondedMethod is app.PME:
             cell = topdata.getPeriodicBoxVectors()
-            self.ethresh = kwargs.get("ethresh", 1e-6)
+            # self.ethresh = kwargs.get("ethresh", 1e-6)
+            self.ethresh = kwargs.get("ethresh", 0.0005)  # openmm default
             self.coeff_method = kwargs.get("PmeCoeffMethod", "openmm")
             self.fourier_spacing = kwargs.get("PmeSpacing", 0.1)
             kappa, K1, K2, K3 = setup_ewald_parameters(r_cut, self.ethresh,
