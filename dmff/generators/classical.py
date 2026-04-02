@@ -8,7 +8,7 @@ import jax.numpy as jnp
 import openmm.app as app
 import openmm.unit as unit
 from ..classical.intra import HarmonicBondJaxForce, HarmonicAngleJaxForce, PeriodicTorsionJaxForce
-from ..classical.inter import CoulNoCutoffForce, CoulombPMEForce, CoulReactionFieldForce, LennardJonesForce, LennardJonesLongRangeForce
+from ..classical.inter import CoulNoCutoffForce, CoulombPMEForce, CoulReactionFieldForce, LennardJonesForce, LennardJonesLongRangeForce, LennardJonesPMEForce
 from typing import Tuple, List, Union, Callable
 
 
@@ -899,6 +899,7 @@ class NonbondedGenerator:
             app.CutoffPeriodic: "CutoffPeriodic",
             app.CutoffNonPeriodic: "CutoffNonPeriodic",
             app.PME: "PME",
+            app.LJPME: "LJPME"
         }
         methodString = methodMap[nonbondedMethod]
         if nonbondedMethod not in methodMap:
@@ -981,7 +982,7 @@ class NonbondedGenerator:
             r_cut = nonbondedCutoff
 
         # PME Settings
-        if nonbondedMethod is app.PME:
+        if nonbondedMethod is app.PME or nonbondedMethod is app.LJPME:
             cell = topdata.getPeriodicBoxVectors()
             # self.ethresh = kwargs.get("ethresh", 1e-6)
             self.ethresh = kwargs.get("ethresh", 0.0005)  # openmm default
@@ -991,7 +992,7 @@ class NonbondedGenerator:
                                                        cell,
                                                        self.fourier_spacing,
                                                        self.coeff_method)
-        if nonbondedMethod is not app.PME:
+        if nonbondedMethod is not app.PME and nonbondedMethod is not app.LJPME:
             # do not use PME
             if nonbondedMethod in [app.CutoffPeriodic, app.CutoffNonPeriodic]:
                 # use Reaction Field
@@ -1031,14 +1032,27 @@ class NonbondedGenerator:
             isPBC = True
             isNoCut = False
 
-        ljforce = LennardJonesForce(0.0,
-                                    r_cut,
-                                    map_prm,
-                                    map_nbfix,
-                                    isSwitch=False,
-                                    isPBC=isPBC,
-                                    isNoCut=isNoCut)
-        ljenergy = ljforce.generate_get_energy()
+        if nonbondedMethod is not app.LJPME:
+            ljforce = LennardJonesForce(0.0,
+                                        r_cut,
+                                        map_prm,
+                                        map_nbfix,
+                                        isSwitch=False,
+                                        isPBC=isPBC,
+                                        isNoCut=isNoCut)
+            ljenergy = ljforce.generate_get_energy()
+        else:
+            print("map_prm:", map_prm)
+            print("map_prm no overlap:", np.unique(map_prm))
+            print("mat_prm.shape:", map_prm.shape)
+            ljforce = LennardJonesPMEForce(r_cut,
+                                           map_prm,
+                                           map_nbfix,
+                                           kappa,
+                                           (K1, K2, K3),
+                                           pme_order=6,
+                                           )
+            ljenergy = ljforce.generate_get_energy()
 
         # dispersion correction
         use_disp_corr = False
@@ -1085,7 +1099,7 @@ class NonbondedGenerator:
             charges_per_type = params[self.name]["charge"]
             charges_per_atom = charges_per_type[self.map_charge]
             coulE = coulenergy(positions, box, pairs, charges_per_atom, mscales_coul)
-            
+
             ljE = ljenergy(positions, box, pairs, params[self.name]["epsilon"],
                             params[self.name]["sigma"], eps_nbfix, sig_nbfix, mscales_lj)
             if use_disp_corr:

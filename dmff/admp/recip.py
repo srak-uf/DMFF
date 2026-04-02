@@ -452,7 +452,7 @@ def generate_pme_recip(Ck_fn, kappa, gamma, pme_order, K1, K2, K3, lmax):
         # for dispersion, need to include gamma point
         if not gamma:
             C_k = Ck_fn(kpts[3, 1:], kappa, V)
-            E_k = C_k *  jnp.abs(S_k[1:] / theta_k[1:])**2
+            E_k = C_k * jnp.abs(S_k[1:] / theta_k[1:])**2
         else:
             C_k = Ck_fn(kpts[3, :], kappa, V)
             # debug
@@ -460,11 +460,11 @@ def generate_pme_recip(Ck_fn, kappa, gamma, pme_order, K1, K2, K3, lmax):
             #     print('%15.8f%15.8f'%(jnp.real(C_k[i]), jnp.imag(C_k[i])))
             E_k = C_k * jnp.abs(S_k / theta_k)**2
 
-        if not gamma: # doing electrics
+        if not gamma:  # doing electrics
             return jnp.sum(E_k) * DIELECTRIC
         else:
             return jnp.sum(E_k)
-    
+
     if DO_JIT:
         return jit(pme_recip, static_argnums=())
     else:

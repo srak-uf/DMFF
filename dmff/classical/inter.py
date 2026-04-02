@@ -1,14 +1,16 @@
 from typing import Iterable, Tuple, Optional
 import jax
 import jax.numpy as jnp
+from jax import value_and_grad, vmap
 import numpy as np
 
 from ..utils import pair_buffer_scales, regularize_pairs
 from ..admp.pme import energy_pme
-from ..admp.recip import generate_pme_recip
 from ..admp.spatial import v_pbc_shift
-from ..admp.recip import generate_pme_recip, Ck_1
-from ..admp.pme import DIELECTRIC 
+from ..admp.recip import generate_pme_recip, Ck_1, Ck_6
+from ..admp.pme import DIELECTRIC
+from ..admp.disp_pme import g_p
+from ..utils import jit_condition
 
 
 ONE_4PI_EPS0 = DIELECTRIC * 0.1
@@ -49,7 +51,8 @@ class LennardJonesForce:
             if self.isSwitch:
                 x = (dr_norm - self.r_switch) / (self.r_cut - self.r_switch)
                 S = 1 - 6. * x ** 5 + 15. * x ** 4 - 10. * x ** 3
-                jnp.where(dr_norm > self.r_switch, E, E * S)
+                E = jnp.where(dr_norm > self.r_switch, E * S, E)
+                E = jnp.where(dr_norm >= self.r_cut, 0., E)
             
             return E
 
@@ -73,7 +76,7 @@ class LennardJonesForce:
                 sig_mat = sig_mat.at[_map[1],_map[0]].set(sigfix[_map[2]])
 
             colv_pair = pairs[:, 2]
-            mscale_pair = mscales[colv_pair-1] # in mscale vector, the 0th item is 1-2 scale, the 1st item is 1-3 scale, etc...
+            mscale_pair = mscales[colv_pair-1]  # in mscale vector, the 0th item is 1-2 scale, the 1st item is 1-3 scale, etc...
 
             dr_vec = positions[pairs[:, 0]] - positions[pairs[:, 1]]
             prm_pair0 = map_prm[pairs[:, 0]]
@@ -127,7 +130,164 @@ class LennardJonesLongRangeForce:
             return dispCorrEnergy
         
         return get_energy
-    
+
+
+class LennardJonesPMEForce:
+    def __init__(
+        self,
+        r_cut,
+        map_prm,
+        map_nbfix,
+        kappa: float,
+        K: Tuple[int, int, int],
+        pme_order: int = 6,
+    ) -> None:
+        self.r_cut = r_cut
+        self.kappa = kappa
+        self.K1, self.K2, self.K3 = K[0], K[1], K[2]
+        self.pme_order = pme_order
+
+        self.map_prm = jnp.array(map_prm)
+        self.map_nbfix = map_nbfix
+        assert pme_order == 6, "PME order other than 6 is not supported"
+        # setup calculators
+        self.refresh_calculators()
+
+    def generate_get_energy(self):
+
+        self.d6_recip = generate_pme_recip(
+            Ck_fn=Ck_6,
+            kappa=self.kappa/1,  # /10の理由は？？
+            gamma=True,
+            pme_order=self.pme_order,
+            K1=self.K1,
+            K2=self.K2,
+            K3=self.K3,
+            lmax=0,
+        )
+
+        def get_lj_pme_real_energy(dr_vec, sig, sig_geom, eps, box, mscale):
+            dr_vec = v_pbc_shift(dr_vec, box, jnp.linalg.inv(box))
+            dr_norm = jnp.linalg.norm(dr_vec, axis=1)
+            dr2 = dr_norm * dr_norm
+            dr6 = dr2 * dr2 * dr2
+            sig6 = jnp.power(sig, 6)
+            sig6_geom = jnp.power(sig_geom, 6)
+
+            sig_dr6 = sig6 / dr6
+            sig_geom_dr6 = sig6_geom / dr6
+            sig_dr12 = jnp.power(sig_dr6, 2)
+            E = 4.0 * eps * sig_dr12 * mscale  # E = Cdir/r^12
+
+            x2 = self.kappa * self.kappa * dr2
+            g = g_p(x2, 6)
+
+            E6 = 4.0 * eps * sig_dr6 * mscale
+            E6 -= 4.0 * eps * sig_geom_dr6 * mscale
+            E6 += 4.0 * eps * g[0] * sig_geom_dr6
+            E6 -= 4.0 * eps * (1-mscale) * sig_geom_dr6
+
+            dr_cut2 = jnp.power(self.r_cut, 2)
+            dr_cut2 = jnp.full_like(dr2, dr_cut2)
+            dr_cut6 = dr_cut2 * dr_cut2 * dr_cut2
+            x2_cut = self.kappa * self.kappa * dr_cut2
+            g_cut = g_p(x2_cut, 6)
+            potentialshift = 4.0 * eps * (0.0 - 1.0)*sig6/dr_cut6
+            potentialshift += 4.0 * eps * sig6_geom*(1.0 - g_cut[0])/dr_cut6
+
+            E -= E6
+            E -= potentialshift * mscale
+
+            return E
+
+        def get_ljpme_recip_energy(positions, sig_atom, eps_atom, box):
+            # ci = distribute_dispcoeff(c_list, pairs[:, 0])
+            c_list = 2 * jnp.sqrt(eps_atom * jnp.power(sig_atom, 6))
+            c_list = c_list.T
+            ene_recip = self.d6_recip(positions, box, c_list[:, jnp.newaxis])
+            return -ene_recip
+
+        def get_ljpme_self_energy(sig_atom, eps_atom):
+            c6 = 4 * eps_atom * jnp.power(sig_atom, 6)
+            c6_sum = jnp.sum(c6)
+            self_energy = self.kappa**6/12 * c6_sum
+            return self_energy  # +で加える
+
+        def get_energy(positions, box, pairs, epsilon, sigma, epsfix, sigfix, mscales, aux=None):
+            pairs = pairs.at[:, :2].set(regularize_pairs(pairs[:, :2]))
+            mask = pair_buffer_scales(pairs[:, :2])
+            map_prm = self.map_prm
+
+            eps_m1 = jnp.repeat(epsilon.reshape((-1, 1)), epsilon.shape[0], axis=1)
+            eps_m2 = eps_m1.T
+            eps_mat = jnp.sqrt(eps_m1 * eps_m2 + 1e-32)
+            sig_m1 = jnp.repeat(sigma.reshape((-1, 1)), sigma.shape[0], axis=1)
+            sig_m2 = sig_m1.T
+            sig_mat = (sig_m1 + sig_m2) * 0.5
+            sig_geom_mat = jnp.sqrt(sig_m1 * sig_m2)
+
+            for _map in self.map_nbfix:
+                eps_mat = eps_mat.at[_map[0], _map[1]].set(epsfix[_map[2]])
+                eps_mat = eps_mat.at[_map[1], _map[0]].set(epsfix[_map[2]])
+                sig_mat = sig_mat.at[_map[0], _map[1]].set(sigfix[_map[2]])
+                sig_mat = sig_mat.at[_map[1], _map[0]].set(sigfix[_map[2]])
+                sig_geom_mat = sig_geom_mat.at[_map[0], _map[1]].set(sigfix[_map[2]])
+                sig_geom_mat = sig_geom_mat.at[_map[1], _map[0]].set(sigfix[_map[2]])
+
+            colv_pair = pairs[:, 2]
+            mscale_pair = mscales[colv_pair-1]  # in mscale vector, the 0th item is 1-2 scale, the 1st item is 1-3 scale, etc...
+
+            dr_vec = positions[pairs[:, 0]] - positions[pairs[:, 1]]
+            prm_pair0 = map_prm[pairs[:, 0]]
+            prm_pair1 = map_prm[pairs[:, 1]]
+            eps = eps_mat[prm_pair0, prm_pair1]
+            sig = sig_mat[prm_pair0, prm_pair1]
+            sig_geom = sig_geom_mat[prm_pair0, prm_pair1]
+
+            # eps_scale = eps * mscale_pair
+            eps_atom = epsilon[map_prm]
+            sig_atom = sigma[map_prm]
+
+            E_inter = jnp.sum(get_lj_pme_real_energy(dr_vec, sig, sig_geom, eps, box, mscale_pair) * mask)
+            E_recip = get_ljpme_recip_energy(positions, sig_atom, eps_atom, box)
+            E_self = get_ljpme_self_energy(sig_atom, eps_atom)
+
+            E_inter = E_inter + E_recip + E_self
+            if aux is None:
+                return E_inter
+            else:
+                return jnp.sum(E_inter * mask), aux
+
+        return get_energy
+
+    def refresh_calculators(self):
+        '''
+        refresh the energy and force calculator according to the current environment
+        '''
+        self.d6_recip = generate_pme_recip(Ck_6, self.kappa, True, self.pme_order, self.K1, self.K2, self.K3, 0)
+        # create the energy calculator according to PME environment
+        self.get_energy = self.generate_get_energy()
+        self.get_forces = value_and_grad(self.get_energy)
+        return
+
+
+@jit_condition(static_argnums=(2))
+def disp_pme_self(sigma, kappa, pmax):
+    '''
+    This function calculates the dispersion self energy
+
+    Inputs:
+        c_list:
+            Na * 3: dispersion susceptibilities C_6, C_8, C_10
+        kappa:
+            float: kappa used in dispersion
+
+    Output:
+        ene_self:
+            float: the self energy
+    '''
+    E = -kappa**6/12 * jnp.sum(sigma**2)
+    return E
 
 class CoulNoCutoffForce:
     # E=\frac{{q}_{1}{q}_{2}}{4\pi\epsilon_0\epsilon_1 r}
