@@ -214,6 +214,11 @@ class OpenMMSampleState(SampleState):
             args["constraints"] = None
         if "rigidWater" not in args:
             args["rigidWater"] = False
+
+        if args["nonbondedMethod"] == "LJPME":
+            args["nonbondedMethod"] = app.LJPME
+        elif args["nonbondedMethod"] == "PME":
+            args["nonbondedMethod"] = app.PME
         system = ff.createSystem(topology, **args)
 
         platform = mm.Platform.getPlatformByName(platform)
