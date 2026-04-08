@@ -1,0 +1,43 @@
+[build-system]
+requires = [
+    "setuptools>=64",
+    "setuptools_scm>=8",
+    "wheel",
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dmff"
+dynamic = ["version"]
+description = "Differentiable Molecular Force Field"
+readme = "README.md"
+license = {text = "LGPL-3.0-or-later"}
+authors = [
+    {name = "DeepModeling", email = "windwhisper.yu@gmail.com"}
+]
+keywords = ["DMFF"]
+classifiers = [
+    "Programming Language :: Python :: 3.11",
+    "License :: OSI Approved :: GNU Lesser General Public License v3 (LGPLv3)",
+]
+requires-python = "~=3.11"
+dependencies = [
+    "numpy>=1.18",
+    "jax>=0.4.1",
+    "openmm>=7.6.0",
+    "freud-analysis",
+    "networkx>=3.0",
+    "optax>=0.1.4",
+    "jaxopt>=0.8.0",
+    "pymbar>=4.0.0",
+    "tqdm",
+]
+
+[project.urls]
+Homepage = "https://github.com/deepmodeling/DMFF"
+
+[tool.setuptools.packages.find]
+exclude = ["tests*"]
+
+[tool.setuptools_scm]
+version_file = "dmff/_version.py"
