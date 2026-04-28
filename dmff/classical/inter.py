@@ -157,7 +157,7 @@ class LennardJonesPMEForce:
 
         self.d6_recip = generate_pme_recip(
             Ck_fn=Ck_6,
-            kappa=self.kappa/1,  # /10の理由は？？
+            kappa=self.kappa,  # FIX: No unit conversion (unlike Coulomb PME)
             gamma=True,
             pme_order=self.pme_order,
             K1=self.K1,
@@ -192,26 +192,33 @@ class LennardJonesPMEForce:
             dr_cut6 = dr_cut2 * dr_cut2 * dr_cut2
             x2_cut = self.kappa * self.kappa * dr_cut2
             g_cut = g_p(x2_cut, 6)
-            potentialshift = 4.0 * eps * (0.0 - 1.0)*sig6/dr_cut6
+            potentialshift = 4.0 * eps * (sig6/dr_cut6 - 1.0)*sig6/dr_cut6
             potentialshift += 4.0 * eps * sig6_geom*(1.0 - g_cut[0])/dr_cut6
+            # multiplicative = 4.0 * eps * sig6_geom*(1.0 - g_cut[0])/dr_cut6
 
-            E -= E6
-            E -= potentialshift * mscale
+            E_real = E - E6 - potentialshift * mscale
 
-            return E
+            return E_real, potentialshift * mscale
 
         def get_ljpme_recip_energy(positions, sig_atom, eps_atom, box):
             # ci = distribute_dispcoeff(c_list, pairs[:, 0])
             c_list = 2 * jnp.sqrt(eps_atom * jnp.power(sig_atom, 6))
-            c_list = c_list.T
             ene_recip = self.d6_recip(positions, box, c_list[:, jnp.newaxis])
             return -ene_recip
+
+        # def get_lj_pme_recip_exclusion_energy(dr_vec, box, sig_atom, eps_atom, mscales):
+        #     # ljRcipEnergy = coef*(1.0f - g_p(x2, 6)[0]);
+        #     dr_vec = v_pbc_shift(dr_vec, box, jnp.linalg.inv(box))
+        #     dr_norm = jnp.linalg.norm(dr_vec, axis=1)
+        #     dr2 = dr_norm * dr_norm
+        #     x2 = self.kappa * self.kappa * dr2
+        #     g = g_p(x2, 6)
 
         def get_ljpme_self_energy(sig_atom, eps_atom):
             c6 = 4 * eps_atom * jnp.power(sig_atom, 6)
             c6_sum = jnp.sum(c6)
             self_energy = self.kappa**6/12 * c6_sum
-            return self_energy  # +で加える
+            return self_energy
 
         def get_energy(positions, box, pairs, epsilon, sigma, epsfix, sigfix, mscales, aux=None):
             pairs = pairs.at[:, :2].set(regularize_pairs(pairs[:, :2]))
@@ -248,11 +255,18 @@ class LennardJonesPMEForce:
             eps_atom = epsilon[map_prm]
             sig_atom = sigma[map_prm]
 
-            E_inter = jnp.sum(get_lj_pme_real_energy(dr_vec, sig, sig_geom, eps, box, mscale_pair) * mask)
+            e_mult, e_shift = get_lj_pme_real_energy(dr_vec, sig, sig_geom, eps, box, mscale_pair)
+            E_real = jnp.sum(e_mult * mask)
             E_recip = get_ljpme_recip_energy(positions, sig_atom, eps_atom, box)
             E_self = get_ljpme_self_energy(sig_atom, eps_atom)
+            # print("E_real", E_real)
+            # E_real_shift = jnp.sum(e_shift * mask)
+            # print("E_real_shift", E_real_shift)
+            # print("E_recip", E_recip)
+            # print("E_self", E_self)
+            # print("E_recip+E_self", E_recip + E_self)
 
-            E_inter = E_inter + E_recip + E_self
+            E_inter = E_real + E_recip + E_self
             if aux is None:
                 return E_inter
             else:

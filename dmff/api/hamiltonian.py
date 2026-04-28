@@ -122,7 +122,6 @@ class Hamiltonian:
             topdata = vsite(topdata)
             template = TemplateATypeOperator(self.ffinfo)
             topdata = template(topdata)
-            
             # Process VirtualSites from NonbondedForce if they exist
             if "NonbondedForce" in self.ffinfo["Forces"]:
                 from ..operators.smartsvsite import SMARTSVSiteOperator

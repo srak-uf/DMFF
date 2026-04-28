@@ -1042,9 +1042,6 @@ class NonbondedGenerator:
                                         isNoCut=isNoCut)
             ljenergy = ljforce.generate_get_energy()
         else:
-            print("map_prm:", map_prm)
-            print("map_prm no overlap:", np.unique(map_prm))
-            print("mat_prm.shape:", map_prm.shape)
             ljforce = LennardJonesPMEForce(r_cut,
                                            map_prm,
                                            map_nbfix,

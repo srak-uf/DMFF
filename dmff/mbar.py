@@ -83,9 +83,6 @@ def buildTrajEnergyFunction(
         )(pos_list, box_list, pairs_jax, vol_list)
         time_ener = time.time() - time_begin
         process = psutil.Process(os.getpid())
-        print(
-            f"Energy calc: {time_ener:.2f} sec. Memory Usage: {process.memory_info().rss / 1024**2:.2f} MB"
-        )
 
         # eners__ = jax.vmap(
         #     lambda pos, box, pairs, vol: potential_func(pos, box, pairs, parameters)
