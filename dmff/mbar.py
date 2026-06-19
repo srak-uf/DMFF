@@ -21,7 +21,7 @@ from tqdm import tqdm, trange
 import openmm as mm
 import openmm.app as app
 import openmm.unit as unit
-from .common.nblist import NeighborListFreud
+from .common.nblist import NeighborListFreud, NeighborListRS
 import psutil
 import os
 import time
@@ -33,9 +33,12 @@ def buildTrajEnergyFunction(
     cutoff,
     usePBC=True,
     useFreud=True,
+    useRS=False,
     ensemble="nvt",
     pressure=1.0,
 ):
+    if useFreud and useRS:
+        raise ValueError("Cannot use both Freud and RS neighbor list.")
     def energy_function(traj, parameters, return_input=False):
         pos_list, box_list, pairs_list, vol_list = [], [], [], []
         pair_full = []
@@ -51,7 +54,12 @@ def buildTrajEnergyFunction(
             )
             positions = jnp.array(frame.xyz[0, :, :])
             if usePBC:
-                nbobj = NeighborListFreud(box, cutoff, cov_map)
+                if useFreud:
+                    nbobj = NeighborListFreud(box, cutoff, cov_map)
+                elif useRS:
+                    nbobj = NeighborListRS(box, cutoff, cov_map)
+                else:
+                    raise ValueError("Please specify either useFreud or useRS as True.")
                 nbobj.capacity_multiplier = 1
                 pairs = nbobj.allocate(positions)
                 pairs_list.append(pairs)
