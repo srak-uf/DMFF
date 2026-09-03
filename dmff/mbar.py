@@ -21,7 +21,7 @@ from tqdm import tqdm, trange
 import openmm as mm
 import openmm.app as app
 import openmm.unit as unit
-from .common.nblist import NeighborListFreud, NeighborListRS
+from .common.nblist import NeighborListFreud, NeighborListRS, build_pairs_batch
 import psutil
 import os
 import time
@@ -36,45 +36,48 @@ def buildTrajEnergyFunction(
     useRS=False,
     ensemble="nvt",
     pressure=1.0,
+    nblist_workers=None,
+    nblist_chunksize=None,
 ):
+    """Build a function ``energy_function(traj, parameters)`` that evaluates
+    ``potential_func`` on every frame of an mdtraj trajectory.
+
+    Neighbor lists of all frames are built in a batch with
+    :func:`dmff.common.nblist.build_pairs_batch`, distributing frames over
+    ``nblist_workers`` processes (default: all CPUs; ``1`` = serial).
+    ``nblist_chunksize`` frames are sent to a worker per task (default:
+    chosen automatically).
+    """
     if useFreud and useRS:
         raise ValueError("Cannot use both Freud and RS neighbor list.")
-    def energy_function(traj, parameters, return_input=False):
-        pos_list, box_list, pairs_list, vol_list = [], [], [], []
-        pair_full = []
-        for na in range(traj.topology.n_atoms):
-            for nb in range(na + 1, traj.topology.n_atoms):
-                pair_full.append([na, nb, 0])
-        pair_full = np.array(pair_full, dtype=int)
-        pair_full[:, 2] = cov_map[pair_full[:, 0], pair_full[:, 1]]
-        for frame in tqdm(traj, desc="Pair list"):
-            aa, bb, cc = frame.openmm_boxes(0).value_in_unit(unit.nanometer)
-            box = jnp.array(
-                [[aa[0], aa[1], aa[2]], [bb[0], bb[1], bb[2]], [cc[0], cc[1], cc[2]]]
-            )
-            positions = jnp.array(frame.xyz[0, :, :])
-            if usePBC:
-                if useFreud:
-                    nbobj = NeighborListFreud(box, cutoff, cov_map)
-                elif useRS:
-                    nbobj = NeighborListRS(box, cutoff, cov_map)
-                else:
-                    raise ValueError("Please specify either useFreud or useRS as True.")
-                nbobj.capacity_multiplier = 1
-                pairs = nbobj.allocate(positions)
-                pairs_list.append(pairs)
-            else:
-                pairs_list.append(pair_full)
-        pos_list = jnp.array(traj.xyz)
-        vol_list = jnp.array(traj.unitcell_volumes)
-        box_list = jnp.array(traj.unitcell_vectors)
+    if usePBC and not (useFreud or useRS):
+        raise ValueError("Please specify either useFreud or useRS as True.")
+    nblist_backend = "freud" if useFreud else "rs"
 
-        pmax = max([p.shape[0] for p in pairs_list])
-        pairs_jax = np.zeros((traj.n_frames, pmax, 3), dtype=int) + traj.n_atoms
-        for nframe in range(traj.n_frames):
-            pair = pairs_list[nframe]
-            pairs_jax[nframe, : pair.shape[0], :] = pair[:, :]
-        pairs_jax = jax.numpy.array(pairs_jax)
+    def energy_function(traj, parameters, return_input=False):
+        n_atoms = traj.n_atoms
+        xyz_np = np.asarray(traj.xyz)
+        box_np = np.asarray(traj.unitcell_vectors)
+        if usePBC:
+            pairs_jax = build_pairs_batch(
+                xyz_np,
+                box_np,
+                cutoff,
+                cov_map,
+                backend=nblist_backend,
+                n_workers=nblist_workers,
+                chunksize=nblist_chunksize,
+            )
+        else:
+            ia, ib = np.triu_indices(n_atoms, k=1)
+            pair_full = np.stack(
+                [ia, ib, np.asarray(cov_map)[ia, ib]], axis=1
+            ).astype(int)
+            pairs_jax = np.broadcast_to(pair_full, (traj.n_frames,) + pair_full.shape)
+        pairs_jax = jnp.array(pairs_jax)
+        pos_list = jnp.array(xyz_np)
+        vol_list = jnp.array(traj.unitcell_volumes)
+        box_list = jnp.array(box_np)
         if ensemble.upper() == "NVT":
             ensemble_cns = 0.0
         elif ensemble.upper() == "NPT":

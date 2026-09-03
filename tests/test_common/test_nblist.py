@@ -115,3 +115,68 @@ class TestFreudNeighborlist:
         pairs = nblist.scaled_pairs
         scaled = pair_buffer_scales(nblist.pairs)
         assert pairs.shape[0] == scaled.sum()
+
+
+class TestBuildPairsBatch:
+    """build_pairs_batch must reproduce the per-frame NeighborListFreud result,
+    regardless of the number of worker processes."""
+
+    @pytest.fixture(scope="class")
+    def frames(self):
+        from dmff.common.nblist import build_pairs_batch  # noqa: F401
+        rng = np.random.default_rng(0)
+        n_frames, n_atoms = 7, 60
+        box = np.diag([2.0, 2.0, 2.0])
+        coords = rng.uniform(0.0, 2.0, size=(n_frames, n_atoms, 3)).astype(np.float32)
+        boxes = np.repeat(box[None], n_frames, axis=0)
+        # a random-ish "covalent" map with a few non-zero entries
+        cov_map = np.zeros((n_atoms, n_atoms), dtype=int)
+        for i in range(0, n_atoms - 1, 3):
+            cov_map[i, i + 1] = cov_map[i + 1, i] = 1
+        return coords, boxes, cov_map
+
+    def _reference(self, coords, boxes, cov_map, rcut):
+        ref = []
+        for c, b in zip(coords, boxes):
+            nb = NeighborListFreud(b, rcut, cov_map)
+            nb.capacity_multiplier = 1
+            ref.append(np.asarray(nb.allocate(c)))
+        pmax = max(p.shape[0] for p in ref)
+        out = np.full((len(ref), pmax, 3), coords.shape[1], dtype=int)
+        for i, p in enumerate(ref):
+            out[i, : p.shape[0]] = p
+        return out
+
+    @pytest.mark.parametrize("n_workers", [1, 2, 3])
+    def test_matches_per_frame(self, frames, n_workers):
+        from dmff.common.nblist import build_pairs_batch
+        coords, boxes, cov_map = frames
+        rcut = 0.6
+        ref = self._reference(coords, boxes, cov_map, rcut)
+        got = build_pairs_batch(
+            coords, boxes, rcut, cov_map, n_workers=n_workers, show_progress=False
+        )
+        assert got.shape == ref.shape
+        # pair order inside a frame is not guaranteed -> compare as sets of rows
+        for f in range(coords.shape[0]):
+            r = ref[f][np.lexsort(ref[f].T[::-1])]
+            g = got[f][np.lexsort(got[f].T[::-1])]
+            npt.assert_array_equal(g, r)
+
+    def test_single_box_broadcast(self, frames):
+        from dmff.common.nblist import build_pairs_batch
+        coords, boxes, cov_map = frames
+        a = build_pairs_batch(coords, boxes, 0.6, cov_map, n_workers=1, show_progress=False)
+        b = build_pairs_batch(coords, boxes[0], 0.6, cov_map, n_workers=1, show_progress=False)
+        npt.assert_array_equal(a, b)
+
+    def test_padding_masked(self, frames):
+        from dmff.common.nblist import build_pairs_batch
+        coords, boxes, cov_map = frames
+        got = build_pairs_batch(coords, boxes, 0.6, cov_map, n_workers=2, show_progress=False)
+        for f in range(coords.shape[0]):
+            scales = np.asarray(pair_buffer_scales(jnp.array(got[f])))
+            n_real = int((got[f][:, 0] < coords.shape[1]).sum())
+            assert scales.sum() == n_real
+            # padded rows carry the dummy index in every column
+            assert (got[f][n_real:] == coords.shape[1]).all()
