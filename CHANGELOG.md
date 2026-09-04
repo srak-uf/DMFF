@@ -2,6 +2,13 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
+### Added
+- `dmff.common.nblist.build_pairs_batch`: build the neighbor lists of many frames at once, distributing frames over a pool of (forked) worker processes; freud / neighborlist_rs backends, optional `dtype=np.int32` to halve the memory of large batches.
+
+### Changed
+- `buildTrajEnergyFunction` builds the pair lists of all frames with `build_pairs_batch` instead of one frame at a time; new arguments `nblist_workers` (default: all CPUs, `1` = serial) and `nblist_chunksize`. Frame coordinates / boxes are read directly from `traj.xyz` / `traj.unitcell_vectors` instead of iterating over mdtraj frames.
+- `NeighborListFreud.allocate` / `NeighborListRS.allocate` share the picklable helpers `_freud_raw_pairs` / `_rs_raw_pairs` with the batch builder.
+
 ## [0.2.0] - 2026-04-07
 ### Added
 - Lennard-Jones PME implementation
